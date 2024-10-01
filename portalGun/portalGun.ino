@@ -1,274 +1,261 @@
-// Code to control a Rick and Morty Portal Gun
-// Written by Brandon Pomeroy, 2015
-
-/*
-******** Required Libraries *************
-* ClickEncoder - https://github.com/0xPIT/encoder
-* Adafruit_GFX - https://github.com/adafruit/Adafruit-GFX-Library
-* Adafruit_LEDBackpack - https://github.com/adafruit/Adafruit-LED-Backpack-Library
-*/
-
-
-/*
-********** Required Hardware *********************
-* Adafruit Pro Trinket 5V 16MHz - http://www.adafruit.com/product/2000
-* LiPoly BackPack - http://www.adafruit.com/product/2124
-* LiPoly Battety 3.7V - http://www.adafruit.com/products/1578
-* Rotary Encoder - http://www.adafruit.com/products/377
-* Metal Knob - http://www.adafruit.com/products/2056
-* Quad Alphanumeric Display (Red 0.54") - http://www.adafruit.com/products/1911
-* 10mm Diffused Green LED (x4) - https://www.adafruit.com/products/844
-* 10mm Plastic Bevel LED Holder (x4) - https://www.adafruit.com/products/2171
-* 150 Ohm Resistor (x4) for LEDs
-* Inductive Charging Set - 5V - https://www.adafruit.com/products/1407
-* 2.1mm Panel Mount Barrel Jack - http://www.adafruit.com/products/610
-* 9VDC Power Supply - http://www.adafruit.com/products/63
-*/
-
 #include <Wire.h>
-#include "Adafruit_LEDBackpack.h"
-#include "Adafruit_GFX.h"
-#include <ClickEncoder.h>
-#include <TimerOne.h>
-#include <avr/sleep.h>
-#include <avr/power.h>
+#include <Adafruit_LEDBackpack.h>
+#include <Adafruit_GFX.h>
+#include <ESP32Encoder.h>
+#include <esp_sleep.h>
 
 // Set up our LED display
 Adafruit_AlphaNum4 alpha4 = Adafruit_AlphaNum4();
 char displayBuffer[4];
-uint8_t dimensionLetter='C';
+uint8_t dimensionLetter = 'C';
 
-// Set up the click encoder
-ClickEncoder *encoder;
+// SDA: GPIO 21
+// SCL: GPIO 22
+
+// Set up the rotary encoder using the ESP32Encoder library
+ESP32Encoder encoder;
 int16_t last, value;
-#define encoderPinA          A1
-#define encoderPinB          A0
-#define encoderButtonPin     A2
+#define encoderPinA          32  // 'CLK' // Select appropriate ESP32 GPIO pins
+#define encoderPinB          33  // 'DT' 
+#define encoderButtonPin     25  // 'SW'
 
-// Steps per notch can be 1, 4, or 8. If your encoder is counting
-// to fast or too slow, change this!
-#define stepsPerNotch        4
+// Steps per notch can be 1, 2, or 4, depending on the encoder
+#define stepsPerNotch        1  // Adjusted for more sensitivity (1 click = 1 step)
 
-// Comment this line to make the encoder increment in the opposite direction
-#define reverseEncoderWheel
+// Variables for refined acceleration
+unsigned long lastTurnTime = 0;
+unsigned long accelerationThreshold = 300;  // Time threshold (ms) for detecting rapid turns
+int incrementCounter = 0;  // Counter for the number of increments within the threshold
+int accelerationStartCount = 4;  // Acceleration kicks in after at least 4 increments
+int baseAccelerationMultiplier = 3;  // Base acceleration multiplier
 
-
-// FX Board output delay (ms)
-const int msDelay = 500;
 
 // Set up the Green LEDs
-#define topBulbPin           9
-#define frontRightPin        3
-#define frontCenterPin       5
-#define frontLeftPin         6
+#define topBulbPin           15
+#define frontRightPin        26
+#define frontCenterPin       27
+#define frontLeftPin         14
 #define maximumBright        255
 #define mediumBright         127
 int topBulbBrightness = 255;
 
-// Set up what we need to sleep/wake the Trinket
-// Define the pins you'll use for interrupts - CHANGE THESE to match the input pins
-// you are using in your project
-#define NAV0_PIN A2
-
-//Let us know if our Trinket woke up from sleep
-volatile bool justWokeUp;
-
-
-void timerIsr() {
-  encoder->service();
-}
+bool justWokeUp = false;
+bool buttonState = HIGH;  // Track the current button state
+bool lastButtonState = HIGH;  // Track the previous button state
+unsigned long lastDebounceTime = 0;
+unsigned long debounceDelay = 50;  // 50 ms debounce time
+bool buttonHeldDuringWake = false; // Track if the button was held during wakeup
 
 void setup() {
-  enablePinInterupt(NAV0_PIN);
-  
-  //Set up pin modes
+  // Initialize UART communication for debugging
+  Serial.begin(115200); // Start serial communication at a baud rate of 115200
+  while (!Serial) {
+    ; // Wait for serial port to connect. Needed for native USB port only
+  }
+
+  // Check if the ESP32 woke up from deep sleep
+  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+  if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
+    // ESP32 woke up from deep sleep via the external pin (button)
+    justWokeUp = true;
+  } else {
+    justWokeUp = false;
+  }
+
+  // Debug message: Setup initialization
+  Serial.println("Initializing system...");
+
+  // Set up pin modes for the LEDs
   pinMode(topBulbPin, OUTPUT);
   pinMode(frontRightPin, OUTPUT);
   pinMode(frontLeftPin, OUTPUT);
   pinMode(frontCenterPin, OUTPUT);
-  
-  
+
   digitalWrite(frontRightPin, HIGH);
   digitalWrite(frontLeftPin, HIGH);
   digitalWrite(frontCenterPin, HIGH);
   digitalWrite(topBulbPin, HIGH);
-  
-  
+
+  // Initialize the display
+  alpha4.begin(0x70);  // Pass in the address for the LED display
   encoderSetup();
-  alpha4.begin(0x70);  // pass in the address for the LED display
   
-  justWokeUp = false;
-  
-  //uncomment this to make the display run through a test at startup
-  //displayTest();
+  // Debug message: Setup complete
+  Serial.println("Setup complete.");
 }
 
 void loop() {
+  // Handle wake-up
   if (justWokeUp) {
     digitalWrite(frontRightPin, HIGH);
     digitalWrite(frontLeftPin, HIGH);
     digitalWrite(frontCenterPin, HIGH);
     digitalWrite(topBulbPin, HIGH);
-    justWokeUp = false;
-  }  
-
-  
-  ClickEncoder::Button b = encoder->getButton();
-  switch (b) {
-    case ClickEncoder::Held:
-      // Holding the button will put your trinket to sleep.
-      // The trinket will wake on the next button press
-      alpha4.clear();
-      alpha4.writeDigitAscii(0, 'R');
-      alpha4.writeDigitAscii(1, 'I');
-      alpha4.writeDigitAscii(2, 'C');
-      alpha4.writeDigitAscii(3, 'K');
-      digitalWrite(frontRightPin, LOW);
-      digitalWrite(frontLeftPin, LOW);
-      digitalWrite(frontCenterPin, LOW);
-      digitalWrite(topBulbPin, LOW);
-      alpha4.writeDisplay();
-      delay(5000);
-      alpha4.clear();
-      alpha4.writeDisplay();
-      delay(5000);
-      justWokeUp = true;
-      goToSleep();
-    break;
-    case ClickEncoder::Clicked:
-      // When the encoder wheel is single clicked
-   
-    break;
-    case ClickEncoder::DoubleClicked:
-      //If you double click the button, it sets the dimension to C137
-      dimensionLetter = 'C';
-      value = 137;
-    break;
-    case ClickEncoder::Open:
-      // The dimension will increment from 0-999, then roll over to the next
-      // letter. (A999 -> B000)
-      updateDimension();
-    break;
+    Serial.println("Woke up, all LEDs turned on.");
+    justWokeUp = false;  // Reset flag after waking up and processing
+    lastButtonState = HIGH;  // Assume the button is released when waking up
+    buttonHeldDuringWake = true;  // Indicate the button was pressed during wake-up
   }
-}
-
-
-void encoderSetup(){
-    // set up encoder
-    encoder = new ClickEncoder(encoderPinA, encoderPinB, encoderButtonPin, stepsPerNotch);
-    encoder->setAccelerationEnabled(true);
   
-    Timer1.initialize(1000);
-    Timer1.attachInterrupt(timerIsr); 
-    last = -1;
-    value = 137;
-}
-
-
-void updateDimension(){
-  #ifdef reverseEncoderWheel
-  value -= encoder->getValue();
-  #endif
+  // Read the button state
+  int reading = digitalRead(encoderButtonPin);
   
-  #ifndef reverseEncoderWheel
-  value += encoder->getValue();
-  #endif
-  
-  if (value != last) {
-    if (value > 999){
-      value = 0;
-      if (dimensionLetter == 'Z') {
-        dimensionLetter = 'A';
-      } else {
-        dimensionLetter ++;        
+  // Debouncing logic
+  if (reading != lastButtonState) {
+    lastDebounceTime = millis();  // Reset the debounce timer
+  }
+
+  if ((millis() - lastDebounceTime) > debounceDelay) {
+    // If the button was held during wake-up, ignore it until it's released
+    if (buttonHeldDuringWake) {
+      if (reading == HIGH) {
+        buttonHeldDuringWake = false;  // Button was released, can act on it again
+        Serial.println("Button released after wake-up, ready for next press.");
       }
-    } else if ( value < 0 ) {
-      value = 999;
-      if (dimensionLetter == 'A') {
-        dimensionLetter = 'Z';
-      } else {
-        dimensionLetter --;
+    } else {
+      // Only act on falling edge (when the button is pressed down) if not in wake-up state
+      if (reading == LOW && buttonState == HIGH) {
+        Serial.println("Encoder button pressed.");
+        handleEncoderClick();
       }
     }
-    last = value;
+
+    // Update button state
+    buttonState = reading;
   }
+
+  // Update the lastButtonState
+  lastButtonState = reading;
+
+  // Update the encoder position and display
+  updateDimension();
+}
+
+void encoderSetup() {
+  // Initialize the rotary encoder
   
-  sprintf(displayBuffer, "%03i", value);
+  // Set pin modes with internal pull-ups for the encoder pins
+  pinMode(encoderPinA, INPUT_PULLUP);
+  pinMode(encoderPinB, INPUT_PULLUP);
+  encoder.attachSingleEdge(encoderPinA, encoderPinB);
+  encoder.clearCount();
+  encoder.setCount(137);  // Initial dimension value
+  last = -1;
+  value = 137;
+
+  pinMode(encoderButtonPin, INPUT_PULLUP);  // Use pullup for the button
+
+  // Debug message: Encoder initialized
+  Serial.println("Encoder initialized.");
+}
+
+void updateDimension() {
+  // Get the encoder raw count
+  int rawCount = encoder.getCount();
+  // Divide by steps per notch to get a click value
+  int diff = (rawCount - last) / stepsPerNotch;
+
+  // If the encoder was turned
+  if (diff != 0 || last == -1) {
+
+    if(last != -1){
+      unsigned long now = millis();
+
+      // Check if the movement is within the accelerationThreshold
+      if (now - lastTurnTime < accelerationThreshold) {
+        incrementCounter++;  // Count the number of increments
+      } else {
+        // Reset the increment counter if the time between movements exceeds the threshold
+        incrementCounter = 1;
+      }
+
+      lastTurnTime = now;  // Update the last turn time
+
+      // Apply acceleration if at least 4 increments were made
+      if (incrementCounter >= accelerationStartCount) {
+        // Calculate the acceleration multiplier based on the number of increments
+        int accelerationMultiplier = baseAccelerationMultiplier + (incrementCounter - accelerationStartCount) * 3;
+
+        diff *= accelerationMultiplier;  // Apply acceleration
+        Serial.print("Acceleration applied: ");
+        Serial.println(accelerationMultiplier);
+      }
+
+      // Update the value based on the encoder movement
+      value -= diff;  // Reversed direction
+
+      if (value > 999) {
+        value = 0;
+        if (dimensionLetter == 'Z') {
+          dimensionLetter = 'A';
+        } else {
+          dimensionLetter++;
+        }
+      } else if (value < 0) {
+        value = 999;
+        if (dimensionLetter == 'A') {
+          dimensionLetter = 'Z';
+        } else {
+          dimensionLetter--;
+        }
+      }
+    }
+
+    last = rawCount;  // Update the last raw count
+
+    // Debug message: Dimension value updated
+    Serial.print("Dimension updated to: ");
+    Serial.print(dimensionLetter);
+    Serial.print(value);
+    Serial.println();
+
+    // Update the display
+    sprintf(displayBuffer, "%03i", value);
+    alpha4.clear();
+    alpha4.writeDigitAscii(0, dimensionLetter);
+    alpha4.writeDigitAscii(1, displayBuffer[0]);
+    alpha4.writeDigitAscii(2, displayBuffer[1]);
+    alpha4.writeDigitAscii(3, displayBuffer[2]);
+    alpha4.writeDisplay();
+  }
+}
+
+void handleEncoderClick() {
+  // Handle what happens when the encoder button is pressed
+
+  Serial.println("Handling encoder button click, going to sleep...");
+
   alpha4.clear();
-  alpha4.writeDigitAscii(0, dimensionLetter);
-  alpha4.writeDigitAscii(1, displayBuffer[0]);
-  alpha4.writeDigitAscii(2, displayBuffer[1]);
-  alpha4.writeDigitAscii(3, displayBuffer[2]);
+  alpha4.writeDigitAscii(0, 'R');
+  alpha4.writeDigitAscii(1, 'I');
+  alpha4.writeDigitAscii(2, 'C');
+  alpha4.writeDigitAscii(3, 'K');
   alpha4.writeDisplay();
-}
-
-
-
-
-
-/*
-============== Sleep/Wake Methods ==================
-====================================================
-*/
-
-// Most of this code comes from seanahrens on the adafruit forums
-// http://forums.adafruit.com/viewtopic.php?f=25&t=59392#p329418
-
-
-void enablePinInterupt(byte pin)
-{
-    *digitalPinToPCMSK(pin) |= bit (digitalPinToPCMSKbit(pin));  // enable pin
-    PCIFR  |= bit (digitalPinToPCICRbit(pin)); // clear any outstanding interrupt
-    PCICR  |= bit (digitalPinToPCICRbit(pin)); // enable interrupt for the group
-}
-
-void goToSleep()   
-{
-// The ATmega328 has five different sleep states.
-// See the ATmega 328 datasheet for more information.
-// SLEEP_MODE_IDLE -the least power savings 
-// SLEEP_MODE_ADC
-// SLEEP_MODE_PWR_SAVE
-// SLEEP_MODE_STANDBY
-// SLEEP_MODE_PWR_DOWN -the most power savings
-// I am using the deepest sleep mode from which a
-// watchdog timer interrupt can wake the ATMega328
-
- 
-
-
-set_sleep_mode(SLEEP_MODE_PWR_DOWN); // Set sleep mode.
-sleep_enable(); // Enable sleep mode.
-sleep_mode(); // Enter sleep mode.
-// After waking the code continues
-// to execute from this point.
-
-sleep_disable(); // Disable sleep mode after waking.                   
-}
-
-ISR (PCINT0_vect) // handle pin change interrupt for D8 to D13 here
-{    
-  // if I wired up D8-D13 then I'd need some code here
-} 
-
-ISR (PCINT1_vect) // handle pin change interrupt for A0 to A5 here // NAV0
-{
-    /* This will bring us back from sleep. */
   
-  /* We detach the interrupt to stop it from 
-   * continuously firing while the interrupt pin
-   * is low.
-   */
-  
-  detachInterrupt(0);
+  digitalWrite(frontRightPin, LOW);
+  digitalWrite(frontLeftPin, LOW);
+  digitalWrite(frontCenterPin, LOW);
+  digitalWrite(topBulbPin, LOW);
 
+  delay(2000);
+  
+  alpha4.clear();
+  alpha4.writeDisplay();
+
+  goToSleep();
 }
 
-ISR (PCINT2_vect) // handle pin change interrupt for D0 to D7 here // NAV1, NAV2
-{
-  // Check it was NAV1 or NAV2 and nothing else
+void goToSleep() {
+  // Debug message: Going to deep sleep
+  Serial.println("Entering deep sleep mode...");
+
+  justWokeUp = true;
+
+  // Set up GPIO25 (encoder button pin) to wake up ESP32 from deep sleep
+  esp_sleep_enable_ext0_wakeup(GPIO_NUM_25, 0);  // Wake up on low signal from button press
+
+  esp_deep_sleep_start();
 }
-  
 
 /*
 ============== Testing Methods ==================
@@ -276,7 +263,6 @@ ISR (PCINT2_vect) // handle pin change interrupt for D0 to D7 here // NAV1, NAV2
 */
 
 void displayTest() {
-  
   alpha4.writeDigitRaw(3, 0x0);
   alpha4.writeDigitRaw(0, 0xFFFF);
   alpha4.writeDisplay();
@@ -293,16 +279,16 @@ void displayTest() {
   alpha4.writeDigitRaw(3, 0xFFFF);
   alpha4.writeDisplay();
   delay(200);
-  
+
   alpha4.clear();
   alpha4.writeDisplay();
 
-  // display every character, 
-  for (uint8_t i='!'; i<='z'; i++) {
+  // Display every character
+  for (uint8_t i = '!'; i <= 'z'; i++) {
     alpha4.writeDigitAscii(0, i);
-    alpha4.writeDigitAscii(1, i+1);
-    alpha4.writeDigitAscii(2, i+2);
-    alpha4.writeDigitAscii(3, i+3);
+    alpha4.writeDigitAscii(1, i + 1);
+    alpha4.writeDigitAscii(2, i + 2);
+    alpha4.writeDigitAscii(3, i + 3);
     alpha4.writeDisplay();
     delay(300);
   }
