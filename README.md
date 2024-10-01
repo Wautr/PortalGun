@@ -1,49 +1,57 @@
 # PortalGun
-Code to control a Portal Gun (From Rick and Morty)
+Code to control a Portal Gun (From Rick and Morty) with updated hardware and functionality.
 
-##Libraries
+## What's New in This Fork
+- **ESP32 Support**: The project is updated to work with ESP32.
+- **UART Debugging**: Added UART debug output to monitor encoder rotation, button presses, and system events.
+- **Improved Rotary Encoder Handling**: Better detection of rotation (clockwise/counterclockwise) and button presses.
+
+---
+
+## Libraries
 Download and install the following libraries:
 
-- [ClickEncoder](https://github.com/0xPIT/encoder)
+- [ESP32Encoder](https://github.com/madhephaestus/ESP32Encoder)
 - [Adafruit_GFX](https://github.com/adafruit/Adafruit-GFX-Library)
 - [Adafruit_LEDBackpack](https://github.com/adafruit/Adafruit-LED-Backpack-Library)
 
+---
 
 ## Pin Definitions
-If you deviate from the following definitions, you will have to change the firmware to account for that.
 
-| LED Display | Trinket Pro Pin |
-|--------|--------|
-|   SCL  |   A5   |
-|	SDA  | 	 A4   |
-|	GND  | 	 GND  |
-|	Vcc  |   5V   |
-|   Vi2c |   5V	  |
+### ESP32 Version
 
-
-| Rotary Encoder | Trinket Pro Pin |
-|--------|--------|
-|    A    |   A1  |
-|    B    |   A0  |
-|   GND   |  GND  |
-| Button  |   A2  |
+| **Component**   | **ESP32 Pin**  |
+|-----------------|----------------|
+| **Rotary Encoder (CLK)** | GPIO 32  |
+| **Rotary Encoder (DT)**  | GPIO 33  |
+| **Rotary Encoder Button (SW)**  | GPIO 25 |
+| **LED Display (SCL)**  | GPIO 22 |
+| **LED Display (SDA)**  | GPIO 21 |
+| **Top Bulb LED**  | GPIO 15 |
+| **Front Right LED**  | GPIO 26 |
+| **Front Center LED**  | GPIO 27 |
+| **Front Left LED**  | GPIO 14 |
 
 
-| LED | Trinket Pro Pin |
-|-------------|---------|
-|Top Bulb     |    9    |
-|Front Right  |    3    |
-|Front Center |    5    |
-|Front Left   |    6    |
+---
 
-## Installing Firmware
-First, [set up the Arduino IDE according to Adafruit](https://learn.adafruit.com/introducing-pro-trinket/setting-up-arduino-ide). Connect your Trinket Pro and make sure the bootloader is running, then click upload.
+## Installing Firmware (ESP32)
+1. [Set up the Arduino IDE for ESP32](https://randomnerdtutorials.com/installing-the-esp32-board-in-arduino-ide-windows-macos-linux/).
+2. Connect the ESP32 and upload the sketch.
+3. Use the Serial Monitor (set to `115200` baud) to view debug output.
 
-## Button Behavior
-The rotary encoder has a click button, and we can detect a single click, a double click, and a hold.
-- Single Click : Wakes the Trinket Pro from low power mode
-- Double Click : Reset to dimension C137
-- Hold : Turn off LEDs and put the Trinket Pro into a low power mode.
+---
 
-##Installing SFX
-The main branch doesn't have SFX support. Use the SFX branch to test this out (I found that the speaker inside the case was too quiet to hear.)
+## Button & Encoder Behavior
+- **Single Click**: Wakes the ESP32 from deep sleep.
+- **Single Click**: Turns off the LEDs and enters deep sleep.
+- **Encoder Rotation**: Detects and logs clockwise/counterclockwise movement.
+
+haven't actually wired the LED's yet and checked the main device behavior :) just got the sketch + display running on this platform.
+
+---
+
+## Debugging (UART)
+All actions, such as encoder rotations and button presses, are logged to the serial monitor via UART at `115200` baud for easy troubleshooting.
+
